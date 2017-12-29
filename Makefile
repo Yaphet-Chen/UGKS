@@ -10,7 +10,7 @@ FCFLAGS = -module $(BIN) -O3
 OMPFLAG = -openmp -parallel -fpp
 
 ifeq ($(FC),gfortran)
-    FCFLAGS = -J$(BIN) -O3
+    FCFLAGS = -J$(BIN) -O3 -ffree-line-length-none
     OMPFLAG = -fopenmp
 endif
 
