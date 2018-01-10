@@ -1326,5 +1326,3 @@ program main
     !output solution
     call output()
 end program main
-
-! vim: set ft=fortran tw=0: 
