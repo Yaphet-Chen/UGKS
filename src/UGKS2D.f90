@@ -961,7 +961,8 @@ module io
 
             !control
             cfl = 0.8 !CFL number
-            eps = 1.0E-5 !convergence criteria
+            ! eps = 1.0E-5 !convergence criteria
+            eps = 1.0E-4
             method_interp = SECOND_ORDER !second order interpolation
             method_output = POINTS !output solution as point (node) value
 
@@ -970,7 +971,8 @@ module io
             gam = get_gamma(ck) !ratio of specific heat
             pr = 2.0/3.0 !Prandtl number
             omega = 0.81 !temperature dependence index in VHS model
-            kn = 0.075 !Knudsen number in reference state
+            ! kn = 0.075 !Knudsen number in reference state
+            kn = 0.00075
             alpha_ref = 1.0 !coefficient in HS model
             omega_ref = 0.5 !coefficient in HS model
             mu_ref = get_mu(kn,alpha_ref,omega_ref) !reference viscosity coefficient
@@ -982,8 +984,10 @@ module io
             !geometry
             xlength = 1.0
             ylength = 1.0
-            xnum = 45
-            ynum = 45
+            ! xnum = 45
+            ! ynum = 45
+            xnum = 105
+            ynum = 105
 
             !initial condition (density,u-velocity,v-velocity,lambda=1/temperature)
             init_gas = [1.0, 0.0, 0.0, 1.0]
@@ -992,7 +996,8 @@ module io
             bc_W = [1.0, 0.0, 0.0, 1.0] !west
             bc_E = [1.0, 0.0, 0.0, 1.0] !east
             bc_S = [1.0, 0.0, 0.0, 1.0] !south
-            bc_N = [1.0, 0.15, 0.0, 1.0] !north
+            ! bc_N = [1.0, 0.15, 0.0, 1.0] !north
+            bc_N = [1.0, 0.45, 0.0, 1.0] !north
 
             call init_geometry(xlength,ylength,xnum,ynum) !initialize the geometry
             call init_velocity_gauss(umid,vmid) !initialize discrete velocity space
