@@ -17,6 +17,7 @@ module ConstantVariables
 
     real(KREAL), parameter                              :: PI = 4.0_KREAL*atan(1.0_KREAL) !Pi
     real(KREAL), parameter                              :: SMV = tiny(0.0_KREAL) !Small value to avoid 0/0
+    real(KREAL), parameter                              :: UP = 1.0 !Used in sign() function
 end module ConstantVariables
 
 !--------------------------------------------------
@@ -135,25 +136,56 @@ module Tools
     implicit none
 
 contains
-    subroutine VanleerLimiter(leftCell,midCell,rightCell,midFace)
-        type(CellCenter), intent(in)                    :: leftCell, rightCell
+    !--------------------------------------------------
+    !>Convert primary variables to conservative variables
+    !>@param[in] prim          :primary variables
+    !>@return    GetConserved  :conservative variables
+    !--------------------------------------------------
+    function GetConserved(prim)
+        real(KREAL), intent(in)                         :: prim(3) !Density, x-velocity, lambda=1/temperature
+        real(KREAL)                                     :: GetConserved(3) !Density, x-momentum, total energy
+
+        GetConserved(1) = prim(1)
+        GetConserved(2) = prim(1)*prim(2)
+        GetConserved(3) = 0.5*prim(1)/(prim(3)*(GAMMA-1.0))+0.5*prim(1)*prim(2)**2
+    end function GetConserved
+
+    !--------------------------------------------------
+    !>Obtain discretized Maxwellian distribution
+    !>@param[out] h,b  :distribution function
+    !>@param[in]  prim :primary variables
+    !--------------------------------------------------
+    subroutine DiscreteMaxwell(h,b,prim)
+        real(KREAL), dimension(:), intent(out)          :: h,b
+        real(KREAL), intent(in)                         :: prim(3)
+
+        h = prim(1)*(prim(3)/PI)**(1.0/2.0)*exp(-prim(3)*(uspace-prim(2))**2)
+        b = h*CK/(2.0*prim(3))
+    end subroutine DiscreteMaxwell
+
+    !--------------------------------------------------
+    !>VanLeerLimiter for reconstruction of distrubution function
+    !>@param[in]    leftCell  :the left cell
+    !>@param[inout] midCell   :the middle cell
+    !>@param[in]    rightCell :the right cell
+    !--------------------------------------------------
+    subroutine VanLeerLimiter(leftCell,midCell,rightCell)
+        type(CellCenter), intent(in)                    :: leftCell,rightCell
         type(CellCenter), intent(inout)                 :: midCell
-        type(CellInterface), intent(inout)              :: midface
-        real(KREAL), dimension(3)                       :: splus, sminus
-        real(KREAL), parameter                          :: UP = 1.0_KREAL
+        real(KREAL), allocatable, dimension(:)          :: sL,sR
 
-        splus = (rightCell%conVars-midCell%conVars)/(0.5*(rightCell%length+midCell%length))
-        sminus = (midCell%conVars-leftCell%conVars)/(0.5*(midCell%length+leftCell%length))
+        !allocate array
+        allocate(sL(uNum))
+        allocate(sR(uNum))
 
-        midface%leftVars = midCell%conVars-0.5*midCell%length*(sign(UP,splus)+sign(UP,sminus))*abs(splus)*abs(sminus)/(abs(splus)+abs(sminus)+TINYNUM)
-        midface%rightVars = midCell%conVars+0.5*midCell%length*(sign(UP,splus)+sign(UP,sminus))*abs(splus)*abs(sminus)/(abs(splus)+abs(sminus)+TINYNUM)
-        
-        ! avoid blow up
-        if ( GetLambda(midCell%leftVars)<=SMV .or. GetLambda(midCell%rightVars)<=SMV ) then
-            midCell%leftVars = midCell%conVars
-            midCell%rightVars = midCell%conVars
-        endif
-    end subroutine VanleerLimiter
+        sL = (midCell%h-leftCell%h)/(0.5*(midCell%length+leftCell%length))
+        sR = (rightCell%h-midCell%h)/(0.5*(rightCell%length+midCell%length))
+        midCell%sh = (sign(UP,sR)+sign(UP,sL))*abs(sR)*abs(sL)/(abs(sR)+abs(sL)+SMV)
+
+        sL = (midCell%b-leftCell%b)/(0.5*(midCell%length+leftCell%length))
+        sR = (rightCell%b-midCell%b)/(0.5*(rightCell%length+midCell%length))
+        midCell%sb = (sign(UP,sR)+sign(UP,sL))*abs(sR)*abs(sL)/(abs(sR)+abs(sL)+SMV)
+    end subroutine VanLeerLimiter
 end module Tools
 !--------------------------------------------------
 !>flux calculation
@@ -161,7 +193,146 @@ end module Tools
 module Flux
     use Tools
     implicit none
+contains
+    !--------------------------------------------------
+    !>Calculate flux of inner interface
+    !>@param[in]    leftCell  :cell left to the target interface
+    !>@param[inout] face      :the target interface
+    !>@param[in]    rightCell :cell right to the target interface
+    !--------------------------------------------------
+    subroutine CalcFlux(leftCell,face,rightCell)
+        type(CellCenter), intent(in) :: leftCell,rightCell
+        type(CellInterface), intent(inout) :: face
+        real(KREAL), allocatable, dimension(:) :: h,b !distribution function at the interface
+        real(KREAL), allocatable, dimension(:) :: H0,B0 !Maxwellian distribution function
+        real(KREAL), allocatable, dimension(:) :: H_plus,B_plus !Shakhov part of the equilibrium distribution
+        real(KREAL), allocatable, dimension(:) :: sh,sb !slope of distribution function at the interface
+        integer(KINT), allocatable, dimension(:) :: delta !Heaviside step function
+        real(KREAL) :: w(3),prim(3) !conservative and primary variables at the interface
+        real(KREAL) :: qf !heat flux in normal and tangential direction
+        real(KREAL) :: sw(3) !slope of W
+        real(KREAL) :: aL(3),aR(3),aT(3) !micro slope of Maxwellian distribution, left,right and time.
+        real(KREAL) :: Mu(0:MNUM),Mu_L(0:MNUM),Mu_R(0:MNUM),Mxi(0:2) !<u^n>,<u^n>_{>0},<u^n>_{<0},<\xi^l>
+        real(KREAL) :: Mau_0(3),Mau_L(3),Mau_R(3),Mau_T(3) !<u\psi>,<aL*u^n*\psi>,<aR*u^n*\psi>,<A*u*\psi>
+        real(KREAL) :: tau !collision time
+        real(KREAL) :: Mt(5) !some time integration terms
+        integer :: i,j
 
+        !--------------------------------------------------
+        !prepare
+        !--------------------------------------------------
+        !allocate array
+        allocate(delta(unum))
+        allocate(h(unum))
+        allocate(b(unum))
+        allocate(sh(unum))
+        allocate(sb(unum))
+        allocate(H0(unum))
+        allocate(B0(unum))
+        allocate(H_plus(unum))
+        allocate(B_plus(unum))
+
+        !Heaviside step function
+        delta = (sign(UP,uspace)+1)/2
+
+        !--------------------------------------------------
+        !reconstruct initial distribution
+        !--------------------------------------------------
+        h = (leftCell%h+0.5*leftCell%length*leftCell%sh)*delta+&
+            (rightCell%h-0.5*rightCell%length*rightCell%sh)*(1-delta)
+        b = (leftCell%b+0.5*leftCell%length*leftCell%sb)*delta+&
+            (rightCell%b-0.5*rightCell%length*rightCell%sb)*(1-delta)
+        sh = leftCell%sh*delta+rightCell%sh*(1-delta)
+        sb = leftCell%sb*delta+rightCell%sb*(1-delta)
+
+        !--------------------------------------------------
+        !obtain macroscopic variables
+        !--------------------------------------------------
+        !conservative variables w_0
+        w(1) = sum(weight*h)
+        w(2) = sum(weight*uspace*h)
+        w(3) = 0.5*(sum(weight*uspace**2*h)+sum(weight*b))
+
+        !convert to primary variables
+        prim = get_primary(w)
+
+        !heat flux
+        qf = get_heat_flux(h,b,prim) 
+
+        !--------------------------------------------------
+        !calculate a^L,a^R
+        !--------------------------------------------------
+        sw = (w-leftCell%w)/(0.5*leftCell%length) !left slope of W
+        aL = micro_slope(prim,sw) !calculate a^L
+
+        sw = (rightCell%w-w)/(0.5*rightCell%length) !right slope of W
+        aR = micro_slope(prim,sw) !calculate a^R
+
+        !--------------------------------------------------
+        !calculate time slope of W and A
+        !--------------------------------------------------
+        !<u^n>,<\xi^l>,<u^n>_{>0},<u^n>_{<0}
+        call calc_moment_u(prim,Mu,Mxi,Mu_L,Mu_R) 
+
+        Mau_L = moment_au(aL,Mu_L,Mxi,1) !<aL*u*\psi>_{>0}
+        Mau_R = moment_au(aR,Mu_R,Mxi,1) !<aR*u*\psi>_{<0}
+
+        sw = -prim(1)*(Mau_L+Mau_R) !time slope of W
+        aT = micro_slope(prim,sw) !calculate A
+
+        !--------------------------------------------------
+        !calculate collision time and some time integration terms
+        !--------------------------------------------------
+        tau = get_tau(prim)
+
+        Mt(4) = tau*(1.0-exp(-dt/tau))
+        Mt(5) = -tau*dt*exp(-dt/tau)+tau*Mt(4)
+        Mt(1) = dt-Mt(4)
+        Mt(2) = -tau*Mt(1)+Mt(5) 
+        Mt(3) = dt**2/2.0-tau*Mt(1)
+
+        !--------------------------------------------------
+        !calculate the flux of conservative variables related to g0
+        !--------------------------------------------------
+        Mau_0 = moment_uv(Mu,Mxi,1,0) !<u*\psi>
+        Mau_L = moment_au(aL,Mu_L,Mxi,2) !<aL*u^2*\psi>_{>0}
+        Mau_R = moment_au(aR,Mu_R,Mxi,2) !<aR*u^2*\psi>_{<0}
+        Mau_T = moment_au(aT,Mu,Mxi,1) !<A*u*\psi>
+
+        face%flux = Mt(1)*prim(1)*Mau_0+Mt(2)*prim(1)*(Mau_L+Mau_R)+Mt(3)*prim(1)*Mau_T
+
+        !--------------------------------------------------
+        !calculate the flux of conservative variables related to g+ and f0
+        !--------------------------------------------------
+        !Maxwellian distribution H0 and B0
+        call discrete_maxwell(H0,B0,prim)
+
+        !Shakhov part H+ and B+
+        call shakhov_part(H0,B0,qf,prim,H_plus,B_plus)
+
+        !macro flux related to g+ and f0
+        face%flux(1) = face%flux(1)+Mt(1)*sum(weight*uspace*H_plus)+Mt(4)*sum(weight*uspace*h)-Mt(5)*sum(weight*uspace**2*sh)
+        face%flux(2) = face%flux(2)+Mt(1)*sum(weight*uspace**2*H_plus)+Mt(4)*sum(weight*uspace**2*h)-Mt(5)*sum(weight*uspace**3*sh)
+        face%flux(3) = face%flux(3)+&
+                        Mt(1)*0.5*(sum(weight*uspace*uspace**2*H_plus)+sum(weight*uspace*B_plus))+&
+                        Mt(4)*0.5*(sum(weight*uspace*uspace**2*h)+sum(weight*uspace*b))-&
+                        Mt(5)*0.5*(sum(weight*uspace**2*uspace**2*sh)+sum(weight*uspace**2*sb))
+
+        !--------------------------------------------------
+        !calculate flux of distribution function
+        !--------------------------------------------------
+        face%flux_h = Mt(1)*uspace*(H0+H_plus)+&
+                        Mt(2)*uspace**2*(aL(1)*H0+aL(2)*uspace*H0+0.5*aL(3)*(uspace**2*H0+B0))*delta+&
+                        Mt(2)*uspace**2*(aR(1)*H0+aR(2)*uspace*H0+0.5*aR(3)*(uspace**2*H0+B0))*(1-delta)+&
+                        Mt(3)*uspace*(aT(1)*H0+aT(2)*uspace*H0+0.5*aT(3)*(uspace**2*H0+B0))+&
+                        Mt(4)*uspace*h-Mt(5)*uspace**2*sh
+
+        face%flux_b = Mt(1)*uspace*(B0+B_plus)+&
+                        Mt(2)*uspace**2*(aL(1)*B0+aL(2)*uspace*B0+0.5*aL(3)*(uspace**2*B0+Mxi(2)*H0))*delta+&
+                        Mt(2)*uspace**2*(aR(1)*B0+aR(2)*uspace*B0+0.5*aR(3)*(uspace**2*B0+Mxi(2)*H0))*(1-delta)+&
+                        Mt(3)*uspace*(aT(1)*B0+aT(2)*uspace*B0+0.5*aT(3)*(uspace**2*B0+Mxi(2)*H0))+&
+                        Mt(4)*uspace*b-Mt(5)*uspace**2*sb
+    end subroutine CalcFlux
 end module Flux
 !--------------------------------------------------
 !>UGKS solver
@@ -199,6 +370,28 @@ contains
         !Time step
         dt = CFL/tMax
     end subroutine TimeStep
+
+    !--------------------------------------------------
+    !>Reconstruct the slope of initial distribution function
+    !--------------------------------------------------
+    subroutine Reconstruction()
+        integer(KINT) :: i
+
+        do i=IXMIN-GHOST_NUM+1,IXMAX+GHOST_NUM-1
+            call VanLeerLimiter(ctr(i-1),ctr(i),ctr(i+1))
+        end do
+    end subroutine Reconstruction
+
+    !--------------------------------------------------
+    !>Calculate the flux across the interfaces
+    !--------------------------------------------------
+    subroutine Evolution()
+        integer(KINT) :: i
+
+        do i=IXMIN,IXMAX+1
+            call CalcFlux(ctr(i-1),vface(i),ctr(i))
+        end do
+    end subroutine Evolution
 end module Solver
 !--------------------------------------------------
 !>Initialization of mesh and intial flow field
@@ -345,7 +538,7 @@ end module Initialization
 !--------------------------------------------------
 !>main program
 !--------------------------------------------------
-program Stationary_shock_structure
+program StationaryShockStructure
     use Solver
     use Writer
     implicit none
@@ -392,4 +585,4 @@ program Stationary_shock_structure
     !output solution
     call output()
 
-end program Stationary_shock_structure
+end program StationaryShockStructure
