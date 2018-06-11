@@ -5,13 +5,16 @@ SHELL = /bin/bash -O extglob
 #--------------------------------------------------
 #compilation flag
 OMP = yes
-FC = ifort
+# FC = ifort
+FC = gfortran
 FCFLAGS = -module $(BIN) -O3
 OMPFLAG = -openmp -parallel -fpp
 
 ifeq ($(FC),gfortran)
-    FCFLAGS = -J$(BIN) -O3 -ffree-line-length-none
+    # FCFLAGS = -J$(BIN) -O3 -ffree-line-length-none
+	FCFLAGS = -J$(BIN) -O3 -ffree-line-length-none -march=native
     OMPFLAG = -fopenmp
+	# gfortran -ffree-line-length-none -march=native -funroll-loops -flto -pipe -O3
 endif
 
 ifeq ($(OMP),yes)
