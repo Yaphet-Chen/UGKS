@@ -185,10 +185,29 @@ contains
         real(KREAL), dimension(:), intent(out)          :: h,b
         real(KREAL), intent(in)                         :: prim(3)
 
-        h = prim(1)*(prim(3)/PI)**(1.0/2.0)*exp(-prim(3)*(uspace-prim(2))**2)
+        h = prim(1)*(prim(3)/PI)**(1.0/2.0)*exp(-prim(3)*(uSpace-prim(2))**2)
         b = h*CK/(2.0*prim(3))
     end subroutine DiscreteMaxwell
 
+    !--------------------------------------------------
+    !>Calculate the Shakhov part H^+, B^+
+    !>@param[in]  H,B           :Maxwellian distribution function
+    !>@param[in]  qf            :heat flux
+    !>@param[in]  prim          :primary variables
+    !>@param[out] H_plus,B_plus :Shakhov part
+    !--------------------------------------------------
+    subroutine ShakhovPart(H,B,qf,prim,H_plus,B_plus)
+        real(KREAL), dimension(:), intent(in)           :: H,B
+        real(KREAL), intent(in)                         :: qf
+        real(KREAL), intent(in)                         :: prim(3)
+        real(KREAL), dimension(:), intent(out)          :: H_plus,B_plus
+
+        H_plus = 0.8*(1-PR)*prim(3)**2/prim(1)*&
+                    (uSpace-prim(2))*qf*(2*prim(3)*(uSpace-prim(2))**2+CK-5)*H
+        B_plus = 0.8*(1-PR)*prim(3)**2/prim(1)*&
+                    (uSpace-prim(2))*qf*(2*prim(3)*(uSpace-prim(2))**2+CK-3)*B
+    end subroutine ShakhovPart
+    
     !--------------------------------------------------
     !>VanLeerLimiter for reconstruction of distrubution function
     !>@param[in]    leftCell  :the left cell
@@ -241,7 +260,7 @@ contains
         real(KREAL)                                     :: sw(3) !Slope of conVars
         real(KREAL)                                     :: aL(3),aR(3),aT(3) !Micro slope of Maxwellian distribution, left,right and time.
         real(KREAL)                                     :: Mu(0:MNUM),MuL(0:MNUM),MuR(0:MNUM),Mxi(0:2) !<u^n>,<u^n>_{>0},<u^n>_{<0},<\xi^l>
-        real(KREAL)                                     :: Mau_0(3),Mau_L(3),Mau_R(3),Mau_T(3) !<u\psi>,<aL*u^n*\psi>,<aR*u^n*\psi>,<A*u*\psi>
+        real(KREAL)                                     :: Mau0(3),MauL(3),MauR(3),MauT(3) !<u\psi>,<aL*u^n*\psi>,<aR*u^n*\psi>,<A*u*\psi>
         real(KREAL)                                     :: tau !Collision time
         real(KREAL)                                     :: Mt(5) !Some time integration terms
         integer(KINT)                                   :: i,j
@@ -261,7 +280,7 @@ contains
         allocate(B_plus(uNum))
 
         !Heaviside step function
-        delta = (sign(UP,uspace)+1)/2
+        delta = (sign(UP,uSpace)+1)/2
 
         !--------------------------------------------------
         !Reconstruct initial distribution at interface
@@ -278,8 +297,8 @@ contains
         !--------------------------------------------------
         !Conservative variables w_0 at interface
         conVars(1) = sum(weight*h)
-        conVars(2) = sum(weight*uspace*h)
-        conVars(3) = 0.5*(sum(weight*uspace**2*h)+sum(weight*b))
+        conVars(2) = sum(weight*uSpace*h)
+        conVars(3) = 0.5*(sum(weight*uSpace**2*h)+sum(weight*b))
 
         !Convert to primary variables
         prim = GetPrimary(conVars)
@@ -299,14 +318,14 @@ contains
         !<u^n>,<\xi^l>,<u^n>_{>0},<u^n>_{<0}
         call CalcMoment(prim,Mu,Mxi,MuL,MuR) 
 
-        Mau_L = moment_au(aL,MuL,Mxi,1) !<aL*u*\psi>_{>0}
-        Mau_R = moment_au(aR,MuR,Mxi,1) !<aR*u*\psi>_{<0}
+        MauL = Moment_au(aL,MuL,Mxi,1) !<aL*u*\psi>_{>0}
+        MauR = Moment_au(aR,MuR,Mxi,1) !<aR*u*\psi>_{<0}
 
-        sw = -prim(1)*(Mau_L+Mau_R) !time slope of conVars
-        aT = MicroSlope(prim,sw) !calculate A
+        sw = -prim(1)*(MauL+MauR) !Time slope of conVars
+        aT = MicroSlope(prim,sw) !Calculate A
 
         !--------------------------------------------------
-        !calculate collision time and some time integration terms
+        !Calculate collision time and some time integration terms
         !--------------------------------------------------
         tau = GetTau(prim)
 
@@ -314,52 +333,52 @@ contains
         Mt(5) = -tau*dt*exp(-dt/tau)+tau*Mt(4)
         Mt(1) = dt-Mt(4)
         Mt(2) = -tau*Mt(1)+Mt(5) 
-        Mt(3) = dt**2/2.0-tau*Mt(1)
+        Mt(3) = 0.5*dt**2-tau*Mt(1)
 
         !--------------------------------------------------
-        !calculate the flux of conservative variables related to g0
+        !Calculate the flux of conservative variables related to g0
         !--------------------------------------------------
-        Mau_0 = moment_uv(Mu,Mxi,1,0) !<u*\psi>
-        Mau_L = moment_au(aL,MuL,Mxi,2) !<aL*u^2*\psi>_{>0}
-        Mau_R = moment_au(aR,MuR,Mxi,2) !<aR*u^2*\psi>_{<0}
-        Mau_T = moment_au(aT,Mu,Mxi,1) !<A*u*\psi>
+        Mau0 = Moment_uxi(Mu,Mxi,1,0) !<u*\psi>
+        MauL = Moment_au(aL,MuL,Mxi,2) !<aL*u^2*\psi>_{>0}
+        MauR = Moment_au(aR,MuR,Mxi,2) !<aR*u^2*\psi>_{<0}
+        MauT = Moment_au(aT,Mu,Mxi,1) !<A*u*\psi>
 
-        face%flux = Mt(1)*prim(1)*Mau_0+Mt(2)*prim(1)*(Mau_L+Mau_R)+Mt(3)*prim(1)*Mau_T
+        face%flux = Mt(1)*prim(1)*Mau0+Mt(2)*prim(1)*(MauL+MauR)+Mt(3)*prim(1)*MauT
 
         !--------------------------------------------------
         !calculate the flux of conservative variables related to g+ and f0
         !--------------------------------------------------
+        !Maxwellian distribution H0 and B0
+        call DiscreteMaxwell(H0,B0,prim)
+    
         !Calculate heat flux
         qf = GetHeatFlux(h,b,prim) 
 
-        !Maxwellian distribution H0 and B0
-        call discrete_maxwell(H0,B0,prim)
-    
         !Shakhov part H+ and B+
-        call shakhov_part(H0,B0,qf,prim,H_plus,B_plus)
+        call ShakhovPart(H0,B0,qf,prim,H_plus,B_plus)
 
-        !macro flux related to g+ and f0
-        face%flux(1) = face%flux(1)+Mt(1)*sum(weight*uspace*H_plus)+Mt(4)*sum(weight*uspace*h)-Mt(5)*sum(weight*uspace**2*sh)
-        face%flux(2) = face%flux(2)+Mt(1)*sum(weight*uspace**2*H_plus)+Mt(4)*sum(weight*uspace**2*h)-Mt(5)*sum(weight*uspace**3*sh)
+        !Conservative flux related to g+ and f0
+        face%flux(1) = face%flux(1)+Mt(1)*sum(weight*uSpace*H_plus)+Mt(4)*sum(weight*uSpace*h)-Mt(5)*sum(weight*uSpace**2*sh)
+        face%flux(2) = face%flux(2)+Mt(1)*sum(weight*uSpace**2*H_plus)+Mt(4)*sum(weight*uSpace**2*h)-Mt(5)*sum(weight*uSpace**3*sh)
         face%flux(3) = face%flux(3)+&
-                        Mt(1)*0.5*(sum(weight*uspace*uspace**2*H_plus)+sum(weight*uspace*B_plus))+&
-                        Mt(4)*0.5*(sum(weight*uspace*uspace**2*h)+sum(weight*uspace*b))-&
-                        Mt(5)*0.5*(sum(weight*uspace**2*uspace**2*sh)+sum(weight*uspace**2*sb))
+                        Mt(1)*0.5*(sum(weight*uSpace**3*H_plus)+sum(weight*uSpace*B_plus))+&
+                        Mt(4)*0.5*(sum(weight*uSpace**3*h)+sum(weight*uSpace*b))-&
+                        Mt(5)*0.5*(sum(weight*uSpace**4*sh)+sum(weight*uSpace**2*sb))
 
         !--------------------------------------------------
-        !calculate flux of distribution function
+        !Calculate flux of distribution function
         !--------------------------------------------------
-        face%flux_h = Mt(1)*uspace*(H0+H_plus)+&
-                        Mt(2)*uspace**2*(aL(1)*H0+aL(2)*uspace*H0+0.5*aL(3)*(uspace**2*H0+B0))*delta+&
-                        Mt(2)*uspace**2*(aR(1)*H0+aR(2)*uspace*H0+0.5*aR(3)*(uspace**2*H0+B0))*(1-delta)+&
-                        Mt(3)*uspace*(aT(1)*H0+aT(2)*uspace*H0+0.5*aT(3)*(uspace**2*H0+B0))+&
-                        Mt(4)*uspace*h-Mt(5)*uspace**2*sh
+        face%flux_h = Mt(1)*uSpace*(H0+H_plus)+&
+                        Mt(2)*uSpace**2*(aL(1)*H0+aL(2)*uSpace*H0+0.5*aL(3)*(uSpace**2*H0+B0))*delta+&
+                        Mt(2)*uSpace**2*(aR(1)*H0+aR(2)*uSpace*H0+0.5*aR(3)*(uSpace**2*H0+B0))*(1-delta)+&
+                        Mt(3)*uSpace*(aT(1)*H0+aT(2)*uSpace*H0+0.5*aT(3)*(uSpace**2*H0+B0))+&
+                        Mt(4)*uSpace*h-Mt(5)*uSpace**2*sh
 
-        face%flux_b = Mt(1)*uspace*(B0+B_plus)+&
-                        Mt(2)*uspace**2*(aL(1)*B0+aL(2)*uspace*B0+0.5*aL(3)*(uspace**2*B0+Mxi(2)*H0))*delta+&
-                        Mt(2)*uspace**2*(aR(1)*B0+aR(2)*uspace*B0+0.5*aR(3)*(uspace**2*B0+Mxi(2)*H0))*(1-delta)+&
-                        Mt(3)*uspace*(aT(1)*B0+aT(2)*uspace*B0+0.5*aT(3)*(uspace**2*B0+Mxi(2)*H0))+&
-                        Mt(4)*uspace*b-Mt(5)*uspace**2*sb
+        face%flux_b = Mt(1)*uSpace*(B0+B_plus)+&
+                        Mt(2)*uSpace**2*(aL(1)*B0+aL(2)*uSpace*B0+0.5*aL(3)*(uSpace**2*B0+Mxi(2)*H0))*delta+&
+                        Mt(2)*uSpace**2*(aR(1)*B0+aR(2)*uSpace*B0+0.5*aR(3)*(uSpace**2*B0+Mxi(2)*H0))*(1-delta)+&
+                        Mt(3)*uSpace*(aT(1)*B0+aT(2)*uSpace*B0+0.5*aT(3)*(uSpace**2*B0+Mxi(2)*H0))+&
+                        Mt(4)*uSpace*b-Mt(5)*uSpace**2*sb
         
         !--------------------------------------------------
         !Aftermath
@@ -414,7 +433,7 @@ contains
         real(KREAL), intent(in)                         :: prim(3)
         real(KREAL)                                     :: GetHeatFlux !heat flux in normal and tangential direction
 
-        GetHeatFlux = 0.5*(sum(weight*(uspace-prim(2))*(uspace-prim(2))**2*h)+sum(weight*(uspace-prim(2))*b)) 
+        GetHeatFlux = 0.5*(sum(weight*(uSpace-prim(2))*(uSpace-prim(2))**2*h)+sum(weight*(uSpace-prim(2))*b)) 
     end function GetHeatFlux
 
     !--------------------------------------------------
@@ -448,7 +467,46 @@ contains
         Mxi(1) = 0.5*CK/prim(3) !<\xi^2>
         Mxi(2) = CK*(CK+2.0)/(4.0*prim(3)**2) !<\xi^4>
     end subroutine CalcMoment
+
+    !--------------------------------------------------
+    !>Calculate <a*u^\alpha*\psi>
+    !>@param[in] a         :micro slope of Maxwellian
+    !>@param[in] Mu        :<u^\alpha>
+    !>@param[in] Mxi       :<\xi^l>
+    !>@param[in] alpha     :exponential index of u
+    !>@return    Moment_au :moment of <a*u^\alpha*\psi>
+    !--------------------------------------------------
+    function Moment_au(a,Mu,Mxi,alpha)
+        real(KREAL), intent(in)                         :: a(3)
+        real(KREAL), intent(in)                         :: Mu(0:MNUM),Mxi(0:2)
+        integer(KINT), intent(in)                       :: alpha
+        real(KREAL)                                     :: Moment_au(3)
+
+        Moment_au = a(1)*Moment_uxi(Mu,Mxi,alpha+0,0)+&
+                    a(2)*Moment_uxi(Mu,Mxi,alpha+1,0)+&
+                    0.5*a(3)*Moment_uxi(Mu,Mxi,alpha+2,0)+&
+                    0.5*a(3)*Moment_uxi(Mu,Mxi,alpha+0,2)
+    end function Moment_au
+
+    !--------------------------------------------------
+    !>Calculate <u^\alpha*\xi^\delta*\psi>
+    !>@param[in] Mu         :<u^\alpha>
+    !>@param[in] Mxi        :<\xi^delta>
+    !>@param[in] alpha      :exponential index of u
+    !>@param[in] delta      :exponential index of \xi
+    !>@return    Moment_uxi :moment of <u^\alpha*\xi^\delta*\psi>
+    !--------------------------------------------------
+    function Moment_uxi(Mu,Mxi,alpha,delta)
+        real(kind=RKD),intent(in) :: Mu(0:MNUM),Mxi(0:2)
+        integer,intent(in) :: alpha,delta
+        real(kind=RKD) :: Moment_uxi(3)
+
+        Moment_uxi(1) = Mu(alpha)*Mxi(delta/2)
+        Moment_uxi(2) = Mu(alpha+1)*Mxi(delta/2)
+        Moment_uxi(3) = 0.5*(Mu(alpha+2)*Mxi(delta/2)+Mu(alpha)*Mxi((delta+2)/2))
+    end function Moment_uxi
 end module Flux
+
 !--------------------------------------------------
 !>UGKS solver
 !--------------------------------------------------
