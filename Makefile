@@ -40,6 +40,9 @@ checkdir:
 2D : checkdir
 	$(FC) $(FCFLAGS) -o $(BIN)/UGKS2D src/UGKS2D.f90
 
+StationaryShockStructure: checkdir
+	$(FC) $(FCFLAGS) -o $(BIN)/StationaryShockStructure src/StationaryShockStructure.f90
+
 #build manual
 manual: 
 	cd doc; latex  -shell-escape manual
