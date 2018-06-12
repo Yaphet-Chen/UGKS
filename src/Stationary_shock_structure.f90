@@ -43,9 +43,6 @@ module Mesh
 
     !Cell interface
     type CellInterface
-        ! !Flow field
-        ! real(KREAL)                                     :: left_h(3),left_b(3) !Left distribution function at cell interface
-        ! real(KREAL)                                     :: right_h(3),right_b(3) !Right distribution function at cell interface
         !Flux
         real(KREAL)                                     :: flux(3) !Conservative variables flux at cell interface
         real(KREAL), allocatable, dimension(:)          :: flux_h,flux_b !Flux of distribution function
@@ -66,11 +63,11 @@ module ControlParameters
     !--------------------------------------------------
     !Variables to control the simulation
     !--------------------------------------------------
-    real(KREAL), parameter                              :: CFL = 0.95_KREAL !CFL number
-    real(KREAL)                                         :: simTime = 0.0_KREAL !Current simulation time
-    real(KREAL), parameter                              :: MAX_TIME = 250.0_KREAL !Maximal simulation time
+    real(KREAL), parameter                              :: CFL = 0.95 !CFL number
+    real(KREAL)                                         :: simTime = 0.0 !Current simulation time
+    real(KREAL), parameter                              :: MAX_TIME = 250.0 !Maximal simulation time
     integer(KINT), parameter                            :: MAX_ITER = 1000 !Maximal iteration number
-    integer(KINT)                                       :: iter = 1_KINT !Number of iteration
+    integer(KINT)                                       :: iter = 1 !Number of iteration
     real(KREAL)                                         :: dt !Global time step
 
     !Output control
@@ -90,8 +87,8 @@ module ControlParameters
     real(KREAL), parameter                              :: MU_REF = 5*(ALPHA_REF+1)*(ALPHA_REF+2)*sqrt(PI)/(4*ALPHA_REF*(5-2*OMEGA_REF)*(7-2*OMEGA_REF))*KN !Viscosity coefficient in reference state
     real(KREAL), parameter                              :: MA = 8.0 !Mach number
     !Geometry
-    real(KREAL), parameter                              :: START_POINT = 0.0_KREAL, END_POINT = 50.0_KREAL
-    integer(KINT), parameter                            :: POINTS_NUM = 100_KINT
+    real(KREAL), parameter                              :: START_POINT = 0.0, END_POINT = 50.0
+    integer(KINT), parameter                            :: POINTS_NUM = 100
     integer(KINT), parameter                            :: IXMIN = 1 , IXMAX = POINTS_NUM !Cell index range
     integer(KINT), parameter                            :: GHOST_NUM = 1 !Ghost cell number
 
@@ -99,10 +96,10 @@ module ControlParameters
     !Initial flow field
     !--------------------------------------------------
     !Index method
-    ! --------------------
-    !  (i) |  (i)  | (i+1)
-    ! face | cell  | face
-    ! --------------------
+    !-------------------------------
+    !| (i-1) |  (i) |  (i) | (i+1) |
+    !| cell  | face | cell | face  |
+    !-------------------------------
     type(CellCenter)                                    :: ctr(IXMIN-GHOST_NUM:IXMAX+GHOST_NUM) !Cell center (with ghost cell)
     type(CellInterface)                                 :: vface(IXMIN-GHOST_NUM+1:IXMAX+GHOST_NUM) !Vertical cell interfaces
 
@@ -131,8 +128,7 @@ end module ControlParameters
 !>Define some commonly used functions/subroutines
 !--------------------------------------------------
 module Tools
-    use ConstantVariables
-    use Mesh
+    use ControlParameters
     implicit none
 
 contains
@@ -232,8 +228,9 @@ contains
         midCell%sb = (sign(UP,sR)+sign(UP,sL))*abs(sR)*abs(sL)/(abs(sR)+abs(sL)+SMV)
     end subroutine VanLeerLimiter
 end module Tools
+
 !--------------------------------------------------
-!>flux calculation
+!>Flux calculation
 !--------------------------------------------------
 module Flux
     use Tools
@@ -513,6 +510,7 @@ end module Flux
 module Solver
     use Flux
     implicit none
+
 contains
     !--------------------------------------------------
     !>Calculate time step
@@ -562,6 +560,11 @@ contains
 
     !--------------------------------------------------
     !>Calculate the flux across the interfaces
+    !>Index method
+    ! -------------------------------
+    ! | (i-1) |  (i) |  (i) | (i+1) |
+    ! | cell  | face | cell | face  |
+    ! -------------------------------
     !--------------------------------------------------
     subroutine Evolution()
         integer(KINT) :: i
@@ -570,7 +573,84 @@ contains
             call CalcFlux(ctr(i-1),vface(i),ctr(i))
         end do
     end subroutine Evolution
+
+    !--------------------------------------------------
+    !>Update cell averaged values
+    !>Index method
+    ! -------------------------------
+    ! | (i-1) |  (i) |  (i) | (i+1) |
+    ! | cell  | face | cell | face  |
+    ! -------------------------------
+    !--------------------------------------------------
+    subroutine Update()
+        real(KREAL), allocatable, dimension(:)          :: H_old,B_old !Equilibrium distribution at t=t^n
+        real(KREAL), allocatable, dimension(:)          :: H,B !Equilibrium distribution at t=t^{n+1}
+        real(KREAL), allocatable, dimension(:)          :: H_plus,B_plus !Shakhov part
+        real(KREAL)                                     :: prim_old(3),prim(3) !Primary variables at t^n and t^{n+1}
+        real(KREAL)                                     :: tau_old,tau !Collision time and t^n and t^{n+1}
+        real(KREAL)                                     :: qf
+        integer(KINT)                                   :: i
+
+        !Allocate arrays
+        allocate(H_old(uNum))
+        allocate(B_old(uNum))
+        allocate(H(uNum))
+        allocate(B(uNum))
+        allocate(H_plus(uNum))
+        allocate(B_plus(uNum))
+
+        do i=IXMIN,IXMAX
+            !--------------------------------------------------
+            !Store conVars^n and calculate H^n,B^n,\tau^n
+            !--------------------------------------------------
+            prim_old = GetPrimary(ctr(i)%conVars) !Convert to primary variables
+            call DiscreteMaxwell(H_old,B_old,prim_old) !Calculate Maxwellian
+            tau_old = GetTau(prim_old) !Calculate collision time \tau^n
+
+            !--------------------------------------------------
+            !Update conVars^{n+1} and Calculate H^{n+1},B^{n+1},\tau^{n+1}
+            !--------------------------------------------------
+            ctr(i)%conVars = ctr(i)%conVars+(vface(i)%flux-vface(i+1)%flux)/ctr(i)%length !Update conVars^{n+1}
+
+            prim = GetPrimary(ctr(i)%conVars)
+            call DiscreteMaxwell(H,B,prim)
+            tau = GetTau(prim)
+
+            !--------------------------------------------------
+            !Shakhov part
+            !--------------------------------------------------
+            !Calculate heat flux at t=t^n
+            qf = GetHeatFlux(ctr(i)%h,ctr(i)%b,prim_old) 
+
+            !h^+ = H+H^+ at t=t^n
+            call ShakhovPart(H_old,B_old,qf,prim_old,H_plus,B_plus) !H^+ and B^+
+            H_old = H_old+H_plus !h^+
+            B_old = B_old+B_plus !b^+
+
+            !h^+ = H+H^+ at t=t^{n+1}
+            call ShakhovPart(H,B,qf,prim,H_plus,B_plus)
+            H = H+H_plus
+            B = B+B_plus
+
+            !--------------------------------------------------
+            !Update distribution function
+            !--------------------------------------------------
+            ctr(i)%h = (ctr(i)%h+(vface(i)%flux_h-vface(i+1)%flux_h)/ctr(i)%length+&
+                                0.5*dt*(H/tau+(H_old-ctr(i)%h)/tau_old))/(1.0+0.5*dt/tau)
+            ctr(i)%b = (ctr(i)%b+(vface(i)%flux_b-vface(i+1)%flux_b)/ctr(i)%length+&
+                                0.5*dt*(B/tau+(B_old-ctr(i)%b)/tau_old))/(1.0+0.5*dt/tau)
+        end do
+
+        !Deallocate arrays
+        deallocate(H_old)
+        deallocate(B_old)
+        deallocate(H)
+        deallocate(B)
+        deallocate(H_plus)
+        deallocate(B_plus)
+    end subroutine Update
 end module Solver
+
 !--------------------------------------------------
 !>Initialization of mesh and intial flow field
 !--------------------------------------------------
@@ -609,14 +689,14 @@ contains
     !>Initialize discrete velocity space using Newton–Cotes formulas
     !--------------------------------------------------
     subroutine InitVelocityNewton(num)
-        integer, intent(inout) :: num
-        real(kind=RKD) :: du !Spacing in u velocity space
-        integer :: i
+        integer(KINT), intent(inout)                    :: num
+        real(KREAL)                                     :: du !Spacing in u velocity space
+        integer(KINT)                                   :: i
 
-        !modify num if not appropriate
+        !Modify num if not appropriate
         num = (num/4)*4+1
 
-        !allocate array
+        !Allocate array
         allocate(uSpace(num))
         allocate(weight(num))
 
@@ -705,10 +785,14 @@ contains
         end forall 
 
         !Initialize slope of distribution function at ghost cell
-        ctr(IXMIN-GHOST_NUM)%sh = 0.0
-        ctr(IXMIN-GHOST_NUM)%sb = 0.0
-        ctr(IXMAX+GHOST_NUM)%sh = 0.0
-        ctr(IXMAX+GHOST_NUM)%sb = 0.0
+        ctr(IXMIN-GHOST_NUM)%sh = 0.0; ctr(IXMIN-GHOST_NUM)%sb = 0.0
+        ctr(IXMAX+GHOST_NUM)%sh = 0.0; ctr(IXMAX+GHOST_NUM)%sb = 0.0
+
+        !Deallocation
+        deallocate(hL)
+        deallocate(bL)
+        deallocate(hR)
+        deallocate(bR)
     end subroutine InitFlowField
     
 end module Initialization
@@ -720,7 +804,8 @@ program StationaryShockStructure
     use Solver
     use Writer
     implicit none
-    real(KREAL) :: start, finish
+    real(KREAL)                                         :: start, finish
+    integer(KINT)                                       :: i
     
     !Initialization
     call Init()
@@ -757,10 +842,26 @@ program StationaryShockStructure
     call cpu_time(finish)
     print '("Run Time = ",f6.3," seconds.")', finish-start
 
-    !close history file
+    !Close history file
     close(HSTFILE)
 
-    !output solution
+    !Output solution
     call output()
 
+    !Aftermath
+    !Deallocate array
+    deallocate(uSpace)
+    deallocate(weight)
+    !Cell center
+    do i=IXMIN-GHOST_NUM,IXMAX+GHOST_NUM
+        deallocate(ctr(i)%h)
+        deallocate(ctr(i)%b)
+        deallocate(ctr(i)%sh)
+        deallocate(ctr(i)%sb)
+    end do
+    !Cell interface
+    do i=IXMIN-GHOST_NUM+1,IXMAX+GHOST_NUM
+        deallocate(vface(i)%flux_h)
+        deallocate(vface(i)%flux_b)
+    end do
 end program StationaryShockStructure
