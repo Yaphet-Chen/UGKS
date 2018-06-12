@@ -122,6 +122,22 @@ module ControlParameters
     real(KREAL), parameter                              :: U_MIN = -15.0, U_MAX = 15.0 !Minimum and maximum micro velocity
     real(KREAL), allocatable, dimension(:)              :: uSpace !Discrete velocity space
     real(KREAL), allocatable, dimension(:)              :: weight !Qudrature weight at velocity u_k
+
+contains
+    !--------------------------------------------------
+    !Enforce boundary condition
+    !--------------------------------------------------
+    subroutine Boundary()
+        !Get conservative variables and distribution function
+        ctr(IXMIN-GHOST_NUM)%conVars = GetConserved(PRIM_LEFT)
+        ctr(IXMAX+GHOST_NUM)%conVars = GetConserved(PRIM_RIGHT)
+        call DiscreteMaxwell(ctr(IXMIN-GHOST_NUM)%h,ctr(IXMIN-GHOST_NUM)%b,PRIM_LEFT)
+        call DiscreteMaxwell(ctr(IXMAX+GHOST_NUM)%h,ctr(IXMAX+GHOST_NUM)%b,PRIM_RIGHT)
+
+        !Initialize slope of distribution function at ghost cell
+        ctr(IXMIN-GHOST_NUM)%sh = 0.0; ctr(IXMIN-GHOST_NUM)%sb = 0.0
+        ctr(IXMAX+GHOST_NUM)%sh = 0.0; ctr(IXMAX+GHOST_NUM)%sb = 0.0
+    end subroutine Boundary
 end module ControlParameters
 
 !--------------------------------------------------
@@ -797,6 +813,49 @@ contains
     
 end module Initialization
 
+module Writer
+    use Solver
+    implicit none
+
+contains
+    !--------------------------------------------------
+    !>Write result
+    !--------------------------------------------------
+    subroutine Output()
+        integer(KINT)                                   :: i
+        real(KREAL), dimension(:,:), allocatable        :: solution
+        !--------------------------------------------------
+        !Prepare solutions
+        !--------------------------------------------------
+        allocate(solution(3,IXMIN-GHOST_NUM:IXMAX+GHOST_NUM)) !including ghost cell
+
+        do i=IXMIN-GHOST_NUM,IXMAX+GHOST_NUM
+            solution(:,i) = GetPrimary(ctr(i)%conVars)
+            solution(3,i) = 1.0/solution(3,i) !Temperature=1/Lambda
+        end do
+
+        !--------------------------------------------------
+        !Write to file
+        !--------------------------------------------------
+        !Open result file and write header
+        open(unit=RSTFILE,file=RSTFILENAME,status="replace",action="write")
+        ! write(RSTFILE,*) "VARIABLES = x, Density, U, Temperature"
+        write(RSTFILE,*) "VARIABLES = x, Density, U, Temperature"
+        write(RSTFILE,*) 'ZONE  T="Time: ',simTime,'", I = ',IXMAX-IXMIN+2*GHOST_NUM-1,', DATAPACKING=BLOCK'
+
+        !Write geometry (cell-centered)
+        write(RSTFILE,"(6(ES23.16,2X))") ctr(IXMIN:IXMAX)%x
+
+        !Write solution (cell-centered)
+        do i=1,3
+            write(RSTFILE,"(6(ES23.16,2X))") solution(i,IXMIN:IXMAX)
+        end do
+
+        !close file
+        close(RSTFILE)
+        deallocate(solution)
+    end subroutine Output
+end module Writer
 !--------------------------------------------------
 !>main program
 !--------------------------------------------------
@@ -846,7 +905,7 @@ program StationaryShockStructure
     close(HSTFILE)
 
     !Output solution
-    call output()
+    call Output()
 
     !Aftermath
     !Deallocate array
