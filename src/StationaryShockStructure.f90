@@ -66,13 +66,13 @@ module ControlParameters
     real(KREAL), parameter                              :: CFL = 0.95 !CFL number
     real(KREAL)                                         :: simTime = 0.0 !Current simulation time
     real(KREAL), parameter                              :: MAX_TIME = 250.0 !Maximal simulation time
-    integer(KINT), parameter                            :: MAX_ITER = 10E5 !Maximal iteration number
+    integer(KINT), parameter                            :: MAX_ITER = 5E5 !Maximal iteration number
     integer(KINT)                                       :: iter = 1 !Number of iteration
     real(KREAL)                                         :: dt !Global time step
 
     !Output control
-    character(len=28), parameter                        :: HSTFILENAME = "StationaryShockStructure.hst" !History file name
-    character(len=28), parameter                        :: RSTFILENAME = "StationaryShockStructure.dat" !Result file name
+    character(len=24), parameter                        :: HSTFILENAME = "StationaryShockStructure" !History file name
+    character(len=24), parameter                        :: RSTFILENAME = "StationaryShockStructure" !Result file name
     integer(KINT), parameter                            :: HSTFILE = 20 !History file ID
     integer(KINT), parameter                            :: RSTFILE = 21 !Result file ID
 
@@ -684,7 +684,8 @@ contains
     !>Main initialization subroutine
     !--------------------------------------------------
     subroutine Init()  
-        call InitUniformMesh() !Initialize Uniform mesh
+        ! call InitUniformMesh() !Initialize Uniform mesh
+        call InitRandomMesh()
         call InitVelocityNewton(uNum) !Initialize discrete velocity space
         call InitFlowField(PRIM_LEFT,PRIM_RIGHT) !Set the initial value
     end subroutine Init
@@ -705,6 +706,27 @@ contains
             ctr(i)%length = dx
         end forall
     end subroutine InitUniformMesh
+
+    !--------------------------------------------------
+    !>Initialize random mesh
+    !--------------------------------------------------
+    subroutine InitRandomMesh()
+        real(KREAL)                                     :: dx(IXMIN-GHOST_NUM:IXMAX+GHOST_NUM)
+        integer(KINT)                                   :: i
+
+        call random_number(dx)
+
+        !Cell length
+        dx(IXMIN:IXMAX) = dx(IXMIN:IXMAX)/sum(dx(IXMIN:IXMAX))*(END_POINT-START_POINT)
+        dx(IXMIN-GHOST_NUM:IXMIN) = dx(IXMIN); dx(IXMAX:IXMAX+GHOST_NUM) = dx(IXMAX)
+
+        !Cell center (with ghost cell)
+        ctr(IXMIN-GHOST_NUM)%x = START_POINT-dx(IXMIN)*GHOST_NUM; ctr(IXMIN-GHOST_NUM)%length = dx(IXMIN-GHOST_NUM)
+        do i=IXMIN-GHOST_NUM+1,IXMAX+GHOST_NUM
+            ctr(i)%x = ctr(i-1)%x+dx(i)
+            ctr(i)%length = dx(i)
+        end do
+    end subroutine InitRandomMesh
 
     !--------------------------------------------------
     !>Initialize discrete velocity space using Newton–Cotes formulas
@@ -821,7 +843,9 @@ end module Initialization
 module Writer
     use Tools
     implicit none
-
+    character(len=8)                                    :: date
+    character(len=10)                                   :: time
+    character(len=100)                                  :: fileName
 contains
     !--------------------------------------------------
     !>Write result
@@ -859,7 +883,8 @@ contains
         !Write to file
         !--------------------------------------------------
         !Open result file and write header
-        open(unit=RSTFILE,file=RSTFILENAME,status="replace",action="write")
+        ! using keyword arguments
+        open(unit=RSTFILE,file=RSTFILENAME//trim(fileName)//'.dat',status="replace",action="write")
         ! write(RSTFILE,*) "VARIABLES = x, Density, U, Temperature"
         write(RSTFILE,*) "VARIABLES = x, Density, U, Temperature"
         write(RSTFILE,*) 'ZONE  T="Time: ',simTime,'", I = ',IXMAX-IXMIN+1,', DATAPACKING=BLOCK'
@@ -892,7 +917,9 @@ program StationaryShockStructure
     call Init()
 
     !Open file and write header
-    open(unit=HSTFILE,file=HSTFILENAME,status="replace",action="write") !open history file
+    call date_and_time(DATE=date,TIME=time)
+    fileName = '_'//date//'_'//time(1:6)
+    open(unit=HSTFILE,file=HSTFILENAME//trim(fileName)//'.hst',status="replace",action="write") !open history file
     write(HSTFILE,*) "VARIABLES = iter, simTime, dt" !write header
 
     !Star timer
